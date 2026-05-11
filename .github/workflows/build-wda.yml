@@ -17,13 +17,14 @@ jobs:
       - name: Install npm dependencies
         run: npm install
 
-      - name: Build (unsigned, for Sideloadly re-signing)
+      - name: Build for testing (Debug — embeds .xctest bundle + get-task-allow)
         run: |
-          xcodebuild \
+          xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
-            -configuration Release \
+            -configuration Debug \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath "$PWD/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -32,16 +33,18 @@ jobs:
 
       - name: Package as IPA
         run: |
-          APP=$(find DerivedData/Build/Products -name "*.app" | grep -v simulator | head -1)
+          APP=$(find DerivedData/Build/Products -name "WebDriverAgentRunner-Runner.app" | grep -v simulator | head -1)
           echo "Packaging: $APP"
+          echo "PlugIns contents:"
+          ls "$APP/PlugIns/" || echo "(no PlugIns directory)"
           mkdir Payload
           cp -r "$APP" Payload/
           zip -r WebDriverAgent.ipa Payload/
           ls -lh WebDriverAgent.ipa
 
-      - name: Upload IPA artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: WebDriverAgent-iOS18
+          name: WebDriverAgent-iOS18-debug
           path: WebDriverAgent.ipa
           retention-days: 7
