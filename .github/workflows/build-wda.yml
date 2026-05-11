@@ -1,4 +1,4 @@
-name: Build WebDriverAgent IPA
+name: Build WebDriverAgent IPA (Fully Signed)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,65 @@ jobs:
       - name: Install npm dependencies
         run: npm install
 
-      - name: Build for testing (Debug — embeds .xctest bundle + get-task-allow)
+      - name: Install fastlane
+        run: gem install fastlane --no-document
+
+      - name: Download development certificate
+        env:
+          FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          fastlane cert \
+            --username "${{ secrets.APPLE_ID }}" \
+            --development \
+            --output_path ./certs \
+            --skip_set_partition_list
+          TEAM_ID=$(security find-identity -v -p codesigning \
+            | grep -E "Apple Development|iPhone Developer" \
+            | head -1 \
+            | grep -oE '\([A-Z0-9]+\)' \
+            | tr -d '()')
+          echo "TEAM_ID=$TEAM_ID" >> $GITHUB_ENV
+          echo "Team ID: $TEAM_ID"
+
+      - name: Register device
+        env:
+          FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          fastlane run register_device \
+            name:"iPhone" \
+            udid:"${{ vars.DEVICE_UDID }}" \
+            username:"${{ secrets.APPLE_ID }}" \
+            team_id:"$TEAM_ID"
+
+      - name: Download provisioning profiles (runner + xctest bundle)
+        env:
+          FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          mkdir -p ./profiles
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+
+          for BUNDLE_ID in \
+            "com.facebook.WebDriverAgentRunner.xctrunner" \
+            "com.facebook.WebDriverAgentRunner"; do
+            fastlane sigh \
+              --username "${{ secrets.APPLE_ID }}" \
+              --team_id "$TEAM_ID" \
+              --app_identifier "$BUNDLE_ID" \
+              --development \
+              --force \
+              --output_path ./profiles
+          done
+
+          # Install all profiles so Xcode can find them
+          for p in ./profiles/*.mobileprovision; do
+            UUID=$(security cms -D -i "$p" \
+              | plutil -extract UUID xml1 -o - - \
+              | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p')
+            cp "$p" ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID.mobileprovision"
+            echo "Installed: $UUID"
+          done
+
+      - name: Build with full signing
         run: |
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
@@ -26,30 +84,27 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$PWD/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            EXPANDED_CODE_SIGN_IDENTITY=""
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="$TEAM_ID"
 
-      - name: Ad-hoc sign recursively (inner bundles first, so Sideloadly can re-sign properly)
+      - name: Verify signatures and package
         run: |
-          APP=$(find DerivedData/Build/Products -name "WebDriverAgentRunner-Runner.app" | grep -v simulator | head -1)
+          APP=$(find DerivedData/Build/Products \
+            -name "WebDriverAgentRunner-Runner.app" \
+            | grep -v simulator | head -1)
           echo "App: $APP"
-          codesign --force --deep --sign - "$APP"
-          echo "Signing done."
+          echo "=== Signature check ==="
+          codesign -d -v "$APP" 2>&1 || true
           codesign -d -v "$APP/PlugIns/WebDriverAgentRunner.xctest" 2>&1 || true
-
-      - name: Package as IPA
-        run: |
-          APP=$(find DerivedData/Build/Products -name "WebDriverAgentRunner-Runner.app" | grep -v simulator | head -1)
+          echo "======================"
           mkdir Payload
           cp -r "$APP" Payload/
           zip -r WebDriverAgent.ipa Payload/
           ls -lh WebDriverAgent.ipa
 
-      - name: Upload IPA
+      - name: Upload signed IPA
         uses: actions/upload-artifact@v4
         with:
-          name: WebDriverAgent-iOS18-adhoc
+          name: WebDriverAgent-iOS18-fully-signed
           path: WebDriverAgent.ipa
           retention-days: 7
