@@ -1,129 +1,99 @@
-name: Build WebDriverAgent IPA (unsigned)
+  name: Build WebDriverAgent IPA (unsigned)
 
-on:
-  workflow_dispatch:
+  on:
+    workflow_dispatch:
 
-jobs:
-  build:
-    runs-on: macos-14
-    timeout-minutes: 30
+  jobs:
+    build:
+      runs-on: macos-14
+      timeout-minutes: 30
 
-    steps:
-      - name: Checkout WebDriverAgent
-        uses: actions/checkout@v4
-        with:
-          repository: appium/WebDriverAgent
-          ref: master
-          path: WebDriverAgent
+      steps:
+        - name: Checkout WebDriverAgent
+          uses: actions/checkout@v4
+          with:
+            repository: appium/WebDriverAgent
+            ref: master
+            path: WebDriverAgent
 
-      - name: List Xcode version
-        run: |
-          xcodebuild -version
-          xcrun --show-sdk-path --sdk iphoneos
+        - name: List Xcode version
+          run: |
+            xcodebuild -version
+            xcrun --show-sdk-path --sdk iphoneos
 
-      - name: Build WDA for iOS device (no codesign)
-        working-directory: WebDriverAgent
-        run: |
-          set -e
-          xcodebuild build-for-testing \
-            -project WebDriverAgent.xcodeproj \
-            -scheme WebDriverAgentRunner \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath ./build \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=NO
-          echo "--- Build artifacts ---"
-          find ./build -name "*.app" -type d | head -20
+        - name: Build WDA for iOS device (no codesign)
+          working-directory: WebDriverAgent
+          run: |
+            set -e
+            xcodebuild build-for-testing \
+              -project WebDriverAgent.xcodeproj \
+              -scheme WebDriverAgentRunner \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath ./build \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=NO \
+              ARCHS=arm64 \
+              ONLY_ACTIVE_ARCH=NO
+            echo "--- Build artifacts ---"
+            find ./build -name "*.app" -type d | head -20
 
-      - name: Find WDA Runner .app
-        id: find_app
-        working-directory: WebDriverAgent
-        run: |
-          APP_PATH=$(find ./build -name "WebDriverAgentRunner-Runner.app" -type d | head -1)
-          if [ -z "$APP_PATH" ]; then
-            echo "ERROR: WebDriverAgentRunner-Runner.app not found"
-            find ./build -type d | head -50
-            exit 1
-          fi
-          echo "Found: $APP_PATH"
-          echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
-
-      - name: Strip dSYM debug symbols and clean bundle
-        working-directory: WebDriverAgent
-        run: |
-          set -e
-          APP_PATH="${{ steps.find_app.outputs.app_path }}"
-          echo "Removing .dSYM folders inside app bundle..."
-          find "$APP_PATH" -type d -name "*.dSYM" -exec rm -rf {} + 2>/dev/null || true
-          echo "Removing .swiftmodule (debug only)..."
-          find "$APP_PATH" -type d -name "*.swiftmodule" -exec rm -rf {} + 2>/dev/null || true
-          echo "Result PlugIns:"
-          ls -la "$APP_PATH/PlugIns/" || true
-          echo "Bundle size:"
-          du -sh "$APP_PATH"
-
-      - name: Ad-hoc sign all nested binaries (so iOS accepts cdhash)
-        working-directory: WebDriverAgent
-        run: |
-          set -e
-          APP_PATH="${{ steps.find_app.outputs.app_path }}"
-
-          # Sign innermost first then outward (macOS codesign requirement)
-
-          # 1. .xctest internal frameworks
-          for fw in "$APP_PATH/PlugIns/WebDriverAgentRunner.xctest/Frameworks/"*.framework; do
-            if [ -d "$fw" ]; then
-              echo "Signing $fw"
-              codesign --force --sign - "$fw"
+        - name: Find WDA Runner .app
+          id: find_app
+          working-directory: WebDriverAgent
+          run: |
+            APP_PATH=$(find ./build -name "WebDriverAgentRunner-Runner.app" -type d | head -1)
+            if [ -z "$APP_PATH" ]; then
+              echo "ERROR: WebDriverAgentRunner-Runner.app not found"
+              find ./build -type d | head -50
+              exit 1
             fi
-          done
+            echo "Found: $APP_PATH"
+            echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
 
-          # 2. .xctest bundle itself (this is what --deep skips)
-          echo "Signing .xctest bundle"
-          codesign --force --sign - "$APP_PATH/PlugIns/WebDriverAgentRunner.xctest"
+        - name: Strip dSYM debug symbols and clean bundle
+          working-directory: WebDriverAgent
+          run: |
+            set -e
+            APP_PATH="${{ steps.find_app.outputs.app_path }}"
+            find "$APP_PATH" -type d -name "*.dSYM" -exec rm -rf {} + 2>/dev/null || true
+            find "$APP_PATH" -type d -name "*.swiftmodule" -exec rm -rf {} + 2>/dev/null || true
+            ls -la "$APP_PATH/PlugIns/" || true
+            du -sh "$APP_PATH"
 
-          # 3. App-level frameworks (not in PlugIns)
-          for fw in "$APP_PATH/Frameworks/"*.framework; do
-            if [ -d "$fw" ]; then
-              echo "Signing app framework $fw"
-              codesign --force --sign - "$fw"
-            fi
-          done
+        - name: Ad-hoc sign all nested binaries
+          working-directory: WebDriverAgent
+          run: |
+            set -e
+            APP_PATH="${{ steps.find_app.outputs.app_path }}"
 
-          # 4. Main app bundle (--deep is OK here, but already signed inner)
-          echo "Signing main app"
-          codesign --force --sign - "$APP_PATH"
+            for fw in "$APP_PATH/PlugIns/WebDriverAgentRunner.xctest/Frameworks/"*.framework; do
+              [ -d "$fw" ] && codesign --force --sign - "$fw"
+            done
 
-          echo "--- Verify all _CodeSignature folders ---"
-          find "$APP_PATH" -name "_CodeSignature" -type d | head -20
+            codesign --force --sign - "$APP_PATH/PlugIns/WebDriverAgentRunner.xctest"
 
-          echo "--- Verify .xctest binary signed ---"
-          codesign -dvvv "$APP_PATH/PlugIns/WebDriverAgentRunner.xctest/WebDriverAgentRunner" 2>&1 | head -10 || echo "verify failed"
+            for fw in "$APP_PATH/Frameworks/"*.framework; do
+              [ -d "$fw" ] && codesign --force --sign - "$fw"
+            done
 
-          echo "--- Verify .xctest bundle signed ---"
-          codesign -dvvv "$APP_PATH/PlugIns/WebDriverAgentRunner.xctest" 2>&1 | head -10 || echo "verify failed"
-          ls -la "$APP_PATH"
-          echo "--- PlugIns ---"
-          ls -la "$APP_PATH/PlugIns" 2>/dev/null || echo "no PlugIns dir"
+            codesign --force --sign - "$APP_PATH"
 
-      - name: Package as IPA
-        working-directory: WebDriverAgent
-        run: |
-          set -e
-          rm -rf Payload
-          mkdir -p Payload
-          cp -r "${{ steps.find_app.outputs.app_path }}" Payload/
-          zip -qr WebDriverAgentRunner.ipa Payload
-          echo "--- IPA info ---"
-          ls -la WebDriverAgentRunner.ipa
-          unzip -l WebDriverAgentRunner.ipa | head -30
+            find "$APP_PATH" -name "_CodeSignature" -type d | head -20
+            codesign -dvvv "$APP_PATH/PlugIns/WebDriverAgentRunner.xctest" 2>&1 | head -10
 
-      - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: WebDriverAgentRunner-unsigned-ipa
-          path: WebDriverAgent/WebDriverAgentRunner.ipa
-          retention-days: 30
+        - name: Package as IPA
+          working-directory: WebDriverAgent
+          run: |
+            set -e
+            rm -rf Payload && mkdir -p Payload
+            cp -r "${{ steps.find_app.outputs.app_path }}" Payload/
+            zip -qr WebDriverAgentRunner.ipa Payload
+            ls -la WebDriverAgentRunner.ipa
+
+        - name: Upload IPA artifact
+          uses: actions/upload-artifact@v4
+          with:
+            name: WebDriverAgentRunner-unsigned-ipa
+            path: WebDriverAgent/WebDriverAgentRunner.ipa
+            retention-days: 30
