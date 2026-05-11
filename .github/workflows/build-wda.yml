@@ -31,12 +31,22 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             EXPANDED_CODE_SIGN_IDENTITY=""
 
+      - name: Ad-hoc sign all binaries (so Sideloadly can re-sign properly)
+        run: |
+          APP=$(find DerivedData/Build/Products -name "WebDriverAgentRunner-Runner.app" | grep -v simulator | head -1)
+          echo "App: $APP"
+          # Sign deepest first: dylibs, xctest bundles, then the outer app
+          find "$APP" -name "*.dylib" -exec codesign --force --sign - {} \;
+          find "$APP" -name "*.xctest" -exec codesign --force --sign - {} \;
+          find "$APP" -name "*.framework" -exec codesign --force --sign - {} \;
+          codesign --force --sign - "$APP"
+          echo "Signing done. PlugIns:"
+          ls "$APP/PlugIns/" 2>/dev/null || echo "(no PlugIns)"
+          codesign -d -v "$APP/PlugIns/WebDriverAgentRunner.xctest" 2>&1 || true
+
       - name: Package as IPA
         run: |
           APP=$(find DerivedData/Build/Products -name "WebDriverAgentRunner-Runner.app" | grep -v simulator | head -1)
-          echo "Packaging: $APP"
-          echo "PlugIns contents:"
-          ls "$APP/PlugIns/" || echo "(no PlugIns directory)"
           mkdir Payload
           cp -r "$APP" Payload/
           zip -r WebDriverAgent.ipa Payload/
@@ -45,6 +55,6 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: WebDriverAgent-iOS18-debug
+          name: WebDriverAgent-iOS18-adhoc
           path: WebDriverAgent.ipa
           retention-days: 7
