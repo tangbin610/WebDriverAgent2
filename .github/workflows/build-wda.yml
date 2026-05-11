@@ -1,0 +1,47 @@
+name: Build WebDriverAgent IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout WebDriverAgent
+        uses: actions/checkout@v4
+        with:
+          repository: appium/WebDriverAgent
+          ref: master
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Build (unsigned, for Sideloadly re-signing)
+        run: |
+          xcodebuild \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath "$PWD/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            EXPANDED_CODE_SIGN_IDENTITY=""
+
+      - name: Package as IPA
+        run: |
+          APP=$(find DerivedData/Build/Products -name "*.app" | grep -v simulator | head -1)
+          echo "Packaging: $APP"
+          mkdir Payload
+          cp -r "$APP" Payload/
+          zip -r WebDriverAgent.ipa Payload/
+          ls -lh WebDriverAgent.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebDriverAgent-iOS18
+          path: WebDriverAgent.ipa
+          retention-days: 7
